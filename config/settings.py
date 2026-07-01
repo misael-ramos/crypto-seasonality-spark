@@ -37,5 +37,5 @@ CRYPTO_FILES = [
 # Config S3 (preencher quando for usar)
 AWS_ACCESS_KEY = os.getenv("AWS_ACCESS_KEY", "")
 AWS_SECRET_KEY = os.getenv("AWS_SECRET_KEY", "")
-S3_BUCKET_RAW = os.getenv("S3_BUCKET_RAW", "crypto-analysis-raw")
-S3_BUCKET_PROCESSED = os.getenv("S3_BUCKET_PROCESSED", "crypto-analysis-processed")
+S3_BUCKET_RAW = "crypto-analysis-raw-misael"
+S3_BUCKET_PROCESSED = "crypto-analysis-processed-misael"

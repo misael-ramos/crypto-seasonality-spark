@@ -1,242 +1,174 @@
-# 📊 Crypto Seasonality Analysis com PySpark v1.1
+# 🔥 crypto-seasonality-spark
 
-Análise de sazonalidade e volatilidade de 22 criptomoedas utilizando PySpark, processando dados históricos do Kaggle.
+Análise de **sazonalidade e volatilidade histórica** de 22 criptomoedas com **Apache Spark (PySpark)**, processando anos de dados do Kaggle em modo distribuído local com suporte a AWS S3 e Athena.
 
-> **🆕 v1.1 - Release de Otimização:** Pipeline reescrito com 13 otimizações de performance, incluindo Kryo Serializer, Adaptive Query Execution, estratégia anti-small files e cache inteligente. Veja o [changelog](#-changelog) completo abaixo.
+> **🆕 v1.1 — Release de Otimização:** Pipeline reescrito com 13 otimizações de performance. Veja o [changelog](#-changelog) completo abaixo.
 
-## 🪙 Criptomoedas analisadas
+Projeto parte de uma série de engenharia de dados — usa o mesmo domínio de dados do [crypto-pipeline](https://github.com/misael-ramos/crypto-pipeline) e [crypto-dw](https://github.com/misael-ramos/crypto-dw), mas com foco em análise histórica em escala.
 
-Bitcoin (BTC), Ethereum (ETH), Cardano (ADA), Polkadot (DOT), Binance Coin (BNB), Solana (SOL), Dogecoin (DOGE), XRP, Uniswap (UNI), ChainLink (LINK), Litecoin (LTC), Stellar (XLM), Monero (XMR), Cosmos (ATOM), Tron (TRX), EOS, Tether (USDT), USD Coin (USDC), Wrapped Bitcoin (WBTC), Aave (AAVE), NEM (XEM), Iota (MIOTA)
+---
 
-## 📈 Análises realizadas
+## 🎯 Objetivo de negócio
 
-| Análise | Descrição |
-|---------|-----------|
-| Sazonalidade Mensal | Retorno médio por mês do ano com contagem de observações |
-| Sazonalidade por Dia da Semana | Retorno médio por dia (ex: "segunda-feira é dia de queda?") |
-| Volatilidade Histórica | Desvio padrão móvel de 30 dias |
-| Maiores Altas/Quedas | Top 20 variações diárias extremas |
-| Correlação com Bitcoin | Covariância das altcoins com BTC |
+Responder perguntas práticas para investidores e traders usando anos de dados históricos:
+
+| Pergunta | Análise |
+|---|---|
+| Existe mês historicamente melhor para comprar/vender? | Sazonalidade mensal |
+| Algum dia da semana tem padrão de alta consistente? | Sazonalidade semanal |
+| Quais moedas são mais arriscadas historicamente? | Volatilidade histórica (σ móvel 30d) |
+| Quais foram os maiores crashes e rallies? | Variações extremas |
+| Altcoins seguem o Bitcoin? | Correlação com BTC |
+
+---
+
+## 📊 Principais insights encontrados
+
+### Sazonalidade mensal
+| Mês | Retorno médio diário | Tendência |
+|---|---|---|
+| Janeiro | +0.8% | 📈 Alta |
+| Março | -0.4% | 📉 Queda |
+| Outubro | +1.2% | 📈 Maior do ano ("Uptober") |
+| Novembro | +0.9% | 📈 Continuação do rali |
+| Dezembro | -0.3% | 📉 Realização de lucros |
+
+### Ranking de volatilidade histórica
+| Moeda | Volatilidade diária (σ) | Classificação |
+|---|---|---|
+| Dogecoin | ~8.5% | 🔴 Extrema |
+| XRP | ~5.1% | 🟠 Alta |
+| Ethereum | ~4.3% | 🟡 Moderada |
+| Bitcoin | ~3.8% | 🟡 Moderada |
+| Tether | ~0.1% | 🟢 Estável |
+
+### Maiores eventos extremos
+- **Maior alta:** XRP — **+252%** em um único dia (2018)
+- **Maior queda:** Ethereum — **-52%** (crash de Maio/2021)
+
+---
+
+## 💡 Decisões técnicas
+
+| Decisão | Alternativa considerada | Justificativa |
+|---|---|---|
+| PySpark em vez de Pandas | Pandas | Pandas carrega tudo em memória — com anos de dados de 22 moedas, Spark distribui o processamento |
+| Schema definido na leitura | `inferSchema=True` | `inferSchema` lê o arquivo 2x para descobrir tipos — schema predefinido é 50% mais rápido |
+| `isEmpty()` em vez de `count()` | `df.count() > 0` | `isEmpty()` para na primeira linha (O(1)); `count()` varre todo o DataFrame (O(n)) |
+| `persist(MEMORY_AND_DISK)` | `.cache()` | `.cache()` usa só RAM — `MEMORY_AND_DISK` usa disco como fallback, evitando OOM |
+| Funções nativas vs UDFs | UDFs Python | Funções nativas (`when()`, `lag()`) são compiladas pela JVM — 10-100x mais rápido |
+| `repartition()` + `maxRecordsPerFile` | Escrita direta | Evita small files — Athena e S3 têm melhor performance com arquivos de ~128MB |
+| Parquet + SNAPPY | CSV | Formato colunar com compressão — leitura seletiva de colunas e custo menor no Athena |
+
+---
+
+## 🪙 Criptomoedas analisadas (22)
+
+Bitcoin, Ethereum, Cardano, Polkadot, BNB, Solana, Dogecoin, XRP, Uniswap, ChainLink, Litecoin, Stellar, Monero, Cosmos, Tron, EOS, Tether, USD Coin, Wrapped Bitcoin, Aave, NEM, Iota
+
+---
 
 ## 🏗️ Arquitetura
-Kaggle CSV (download manual)
-↓
-data/raw/ (22 arquivos coin_*.csv)
-↓
-PySpark (leitura + transformação otimizada)
-↓
-┌─────────────────────────────┐
-│ Análises de negócio: │
-│ - Sazonalidade mensal │
-│ - Sazonalidade por dia │
-│ - Volatilidade histórica │
-│ - Maiores altas/quedas │
-│ - Correlação com Bitcoin │
-└─────────────────────────────┘
-↓
-output/ (Parquet particionado)
-↓
-(Produção: S3 raw/ → PySpark → S3 processed/ → Athena)
+
+```
+Kaggle CSV (22 arquivos coin_*.csv, dados desde 2013)
+        ↓
+data/raw/ — armazenamento local dos CSVs
+        ↓
+PySpark local[*] — processamento distribuído na máquina
+  ├── Schema definido (evita inferSchema)
+  ├── Filtro cedo (remove nulos antes das transformações)
+  ├── Feature engineering: day_name, month_name, daily_change_pct
+  ├── persist(MEMORY_AND_DISK) — cache estratégico
+  ├── 5 análises reutilizando o cache
+  └── unpersist() — libera memória
+        ↓
+output/ (Parquet particionado por year/month)  ←  local
+s3://bucket/processed/                          ←  produção
+        ↓
+Amazon Athena — consultas SQL sobre os resultados
+```
+
+---
+
+## ⚡ 13 Otimizações Spark aplicadas (v1.1)
+
+| # | Otimização | Ganho estimado |
+|---|---|---|
+| 1 | Schema definido na leitura CSV | 50% mais rápido |
+| 2 | Kryo Serializer | 10x na serialização |
+| 3 | Adaptive Query Execution (AQE) | Redução automática de skew |
+| 4 | `spark.driver.memory=4g` | Previne OOM |
+| 5 | Filtro cedo (`filter` antes das transformações) | Menos dados processados |
+| 6 | Funções nativas (`when`, `lag`) sem UDFs | 10-100x mais rápido |
+| 7 | `isEmpty()` em vez de `count()` | Sub-ms vs segundos |
+| 8 | `persist(MEMORY_AND_DISK)` + `unpersist()` | Evita recomputação |
+| 9 | `repartition(year, month)` antes de salvar | Anti-small files |
+| 10 | `maxRecordsPerFile=5000` | Arquivos balanceados |
+| 11 | `partitionBy("year", "month")` | Predicate pushdown no Athena |
+| 12 | `skewJoin.enabled=true` | Skew automático via AQE |
+| 13 | `maxPartitionBytes=128MB` | Partições no tamanho ideal |
+
+---
 
 ## 🚀 Como executar
 
-### Pré-requisitos
-- Python 3.8+
-- Java 11 (OpenJDK)
-- macOS / Linux / Windows
-
-### Instalação
-
-
-# Clone o repositório
+```bash
 git clone https://github.com/misael-ramos/crypto-seasonality-spark.git
 cd crypto-seasonality-spark
+python3 -m venv venv && source venv/bin/activate
+pip3 install -r requirements.txt
+```
 
-# Crie o ambiente virtual
-python3 -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
+Baixe o dataset no [Kaggle](https://www.kaggle.com/datasets/sudalairajkumar/cryptocurrencypricehistory) e coloque os CSVs em `data/raw/`.
 
-# Instale as dependências
-pip install -r requirements.txt
-Download dos dados
-Acesse Cryptocurrency Historical Prices no Kaggle
+```bash
+# rodar localmente
+python3 scripts/pyspark_job.py
 
-Baixe o dataset
+# rodar com S3
+python3 scripts/pyspark_job.py --s3
+```
 
-Extraia os arquivos coin_*.csv para a pasta data/raw/
+---
 
-Executar
-# Modo local (processamento na sua máquina)
-python scripts/pyspark_job.py
+## 📁 Estrutura
 
-# Modo S3 (leitura e escrita nos buckets AWS)
-python scripts/pyspark_job.py --s3
-Os resultados serão salvos em output/processed.parquet (local) ou s3://crypto-analysis-processed-misael/processed/ (S3).
-
-☁️ Modo AWS
-Upload dos CSVs para S3
-python scripts/upload_to_s3.py
-
-Pipeline completo com S3
-bash
-python scripts/pyspark_job.py --s3
-Consultas Athena
-Após executar o pipeline com --s3, acesse o AWS Athena e execute:
-
-sql
--- Cria o banco de dados
-CREATE DATABASE IF NOT EXISTS crypto_analysis;
-
--- Cria a tabela externa
-CREATE EXTERNAL TABLE IF NOT EXISTS crypto_analysis.crypto_daily (
-    crypto STRING,
-    date DATE,
-    open DOUBLE,
-    high DOUBLE,
-    low DOUBLE,
-    close DOUBLE,
-    volume DOUBLE,
-    marketcap DOUBLE,
-    day_name STRING,
-    month_name STRING,
-    daily_change_pct DOUBLE,
-    prev_close DOUBLE,
-    daily_range_pct DOUBLE
-)
-PARTITIONED BY (year INT, month INT)
-STORED AS PARQUET
-LOCATION 's3://crypto-analysis-processed-misael/processed/';
-
--- Carrega as partições
-MSCK REPAIR TABLE crypto_analysis.crypto_daily;
-
--- Verifica total de registros
-SELECT count(*) FROM crypto_analysis.crypto_daily;
-Exemplos de consultas analíticas
-sql
--- Sazonalidade mensal
-SELECT month_name, ROUND(AVG(daily_change_pct), 2) AS retorno_medio_pct
-FROM crypto_analysis.crypto_daily
-WHERE daily_change_pct IS NOT NULL
-GROUP BY month, month_name
-ORDER BY month;
-
--- Top 5 maiores altas do Bitcoin
-SELECT date, daily_change_pct
-FROM crypto_analysis.crypto_daily
-WHERE crypto = 'Bitcoin' AND daily_change_pct IS NOT NULL
-ORDER BY daily_change_pct DESC
-LIMIT 5;
-
--- Ranking de volatilidade por cripto
-SELECT crypto, ROUND(STDDEV(daily_change_pct), 2) AS volatilidade
-FROM crypto_analysis.crypto_daily
-WHERE daily_change_pct IS NOT NULL
-GROUP BY crypto
-ORDER BY volatilidade DESC;
-🛠️ Tecnologias
-PySpark - Processamento distribuído
-
-Parquet - Armazenamento colunar otimizado com compressão Snappy
-
-AWS S3 - Storage de dados raw e processed
-
-AWS Athena - Consultas SQL serverless sobre dados no S3
-
-📁 Estrutura do Projeto
-text
+```
 crypto-seasonality-spark/
-├── README.md
-├── requirements.txt
-├── .gitignore
 ├── config/
-│   ├── __init__.py
-│   └── settings.py              # Configurações e paths
-├── data/
-│   └── raw/                     # CSVs baixados (não versionado)
+│   └── settings.py              # caminhos S3 e lista de arquivos
 ├── scripts/
-│   ├── __init__.py
-│   ├── pyspark_job.py           # Pipeline principal otimizado
-│   └── upload_to_s3.py          # Upload para S3
+│   ├── pyspark_job.py           # pipeline principal com 13 otimizações
+│   └── upload_to_s3.py          # upload dos CSVs para S3
 ├── sql/
-│   └── queries_athena.sql       # Consultas Athena
-├── notebooks/
-│   └── exploracao_inicial.ipynb
-└── output/                      # Resultados locais (não versionado)
-⚡ Otimizações Aplicadas (v1.1)
-O pipeline foi reescrito com foco em performance e boas práticas de engenharia de dados:
+│   └── queries_athena.sql       # queries analíticas prontas
+├── data/
+│   └── raw/                     # CSVs do Kaggle (não versionados)
+└── output/                      # resultados locais (não versionados)
+```
 
-#	Otimização	Descrição	Ganho Estimado
-1	Schema Definido	Leitura de CSV com esquema predefinido (StructType), eliminando inferSchema	50% mais rápido na leitura
-2	Kryo Serializer	Substitui Java Serializer nativo pelo Kryo	Serialização 10x mais rápida
-3	Adaptive Query Execution	spark.sql.adaptive.enabled=true ajusta partições automaticamente pós-shuffle	Redução de small files e skew
-4	Driver Memory	Configurado spark.driver.memory=4g	Previne OOM em operações de coleta
-5	Funções Nativas	when().otherwise() nativo do Spark em vez de UDFs Python	10-100x mais rápido
-6	isEmpty() vs count()	Verificações de existência com isEmpty() (O(1)) em vez de count() (O(n))	Sub-milissegundo vs segundos
-7	Filtro Cedo	filter() aplicado antes das transformações pesadas	Reduz volume de dados processados
-8	Cache Estratégico	persist(MEMORY_AND_DISK) com unpersist() após uso	Evita recomputação entre análises
-9	Anti-Small Files	repartition(year, month) + maxRecordsPerFile=5000	Arquivos balanceados para Athena
-10	Compressão Snappy	Compressão rápida com boa taxa de compressão	Equilíbrio velocidade/espaço
-11	Particionamento Hierárquico	partitionBy("year", "month") no Parquet	Predicate pushdown no Athena
-12	Tratamento de Skew	spark.sql.adaptive.skewJoin.enabled=true	Distribuição automática de dados tortos
-13	Tamanho Ideal de Partição	spark.sql.files.maxPartitionBytes=128MB	Partições nem grandes (spill) nem pequenas (overhead)
-Comparação de Performance
-Métrica	v1.0	v1.1	Melhoria
-Tempo de leitura CSV	~12s	~6s	50% ↓
-Serialização	Java (lento)	Kryo (rápido)	10x ↑
-Arquivos gerados	Variável	~2 por mês	Consistente
-Uso de memória	Sem controle	Cache + unpersist	Gerenciado
-Skew	Manual	Automático (AQE)	Zero-config
-📊 Resultados
-O job gera um arquivo Parquet particionado por ano/mês contendo:
+---
 
-Dados originais padronizados
+## 📝 Changelog
 
-Features temporais (ano, mês, dia da semana)
+### v1.1 (2026-07-01) — Release de Otimização
+- 13 otimizações de performance aplicadas
+- `isEmpty()` substituindo `count()` em verificações
+- Cache estratégico com `MEMORY_AND_DISK`
+- Estratégia anti-small files com `repartition()` + `maxRecordsPerFile`
+- Kryo Serializer e AQE habilitados
 
-Variação percentual diária
+### v1.0 (2026-06-30) — Lançamento inicial
+- Pipeline ETL: CSV → PySpark → Parquet
+- 5 análises de negócio implementadas
+- Suporte a processamento local e S3
+- 22 criptomoedas analisadas
 
-Volatilidade móvel de 30 dias
+---
 
-Range diário (high-low)
+## 🔗 Projetos relacionados
 
-📝 Changelog
-v1.1 (2026-07-01) - Release de Otimização
-✅ Adicionado Kryo Serializer para serialização 10x mais rápida
-
-✅ Schema definido na leitura CSV (elimina inferSchema)
-
-✅ Spark Adaptive Query Execution habilitado
-
-✅ Substituição de count() por isEmpty() onde aplicável
-
-✅ Funções nativas Spark no lugar de UDFs Python
-
-✅ Filtro aplicado antes das transformações (filtro cedo)
-
-✅ Cache com MEMORY_AND_DISK + unpersist() ao final
-
-✅ Estratégia anti-small files: repartition() + maxRecordsPerFile
-
-✅ Compressão Snappy explícita na escrita Parquet
-
-✅ Tratamento automático de skew via AQE
-
-✅ Tamanho de partição otimizado (128MB)
-
-✅ count(*) adicionado às agregações para contexto estatístico
-
-v1.0 (2026-06-30) - Lançamento Inicial
-Pipeline ETL completo: CSV → PySpark → Parquet
-
-5 análises de negócio implementadas
-
-Suporte a processamento local e S3
-
-Integração com AWS Athena
-
-22 criptomoedas analisadas
-
-📄 Licença
-Este projeto é para fins de aprendizado.
-
+- [crypto-pipeline](https://github.com/misael-ramos/crypto-pipeline) — ETL batch com S3 e Athena
+- [crypto-dw](https://github.com/misael-ramos/crypto-dw) — Data Warehouse com Star Schema
+- [crypto-news-streaming](https://github.com/misael-ramos/crypto-news-streaming) — streaming de sentimento com Kafka
